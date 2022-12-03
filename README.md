@@ -22,10 +22,7 @@
 
 # about me
 
-github:[https:\/\/github.com\/lwl1989](https:\/\/github.com\/lwl1989)
+github:[https://github.com/lwl1989](https://github.com//lwl1989)
 
-oschina:[https:\/\/my.oschina.net\/lwl1989\/](https:\/\/my.oschina.net\/lwl1989\/)
-
-oschina git:[https:\/\/gitee.com\/Mars_Lee](https:\/\/gitee.com\/Mars_Lee)
-
+oschina:[https://my.oschina.net/lwl1989](https://my.oschina.net/lwl1989)
 		
