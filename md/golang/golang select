@@ -1,0 +1,126 @@
+# 概述
+go 的 select 语句是专门为了 channel 发送和接收消息而诞生的语句, 在语句的运行期间, 该 goroutine 是阻塞的.
+
+# DEMO
+```
+func main() {
+	ch1 := make(chan int, 1)
+	ch2 := make(chan int, 10)
+	select {
+	case v := <-ch1:
+		fmt.Printf("ch1 = %v", v)
+	case v := <-ch2:
+		fmt.Printf("ch2 = %v", v)
+	default:
+		// 如果没有 default, 会一直阻塞等待某个 case 成功
+		fmt.Println("default!")
+	}
+}
+```
+注意两个问题:
+
+select 并不是一个循环, 如果你需要反复的监听多个 channel, 搭配 for{}使用,如果外层没有for，将只会执行一次就结束
+
+常用的方式如下
+
+```
+for {
+  select {
+    case v := <-ch1:
+    fmt.Printf("ch1 = %v", v)
+    case v := <-ch2:
+    fmt.Printf("ch2 = %v", v)
+  }
+  // 一次读取之后立刻再次监听
+}
+```
+
+# 实现原理
+
+## 数据结构
+
+select 底层由两部分组成, case 语句和执行函数，每一个 case 语句结构如下
+```
+type scase struct {
+    c           *hchan         // chan
+    elem        unsafe.Pointer // 读或者写的缓冲区地址
+}
+```
+这里的 hchan, 存放了监听的 channel, 在一个 select 中, 包含了多个 case. 这些 case 组成了一个数组
+
+
+执行的 select 语句, 实际上调用函数func selectgo(cas0 *scase, order0 *uint16, ncases int) (int, bool)
+[源码位置](https://github.com/golang/go/blob/master/src/runtime/select.go "源码位置")
+
+参数意义如下:
+
+-  cas0: case 数组中第一个case的地址
+-  order0: case数组两倍长的缓冲区
+-  ncases: case 数组的长度
+- selectgo 返回的说所选的 scase 的索引, 而如果 scase 是接收操作, 则返回是否收到值
+
+### 调用流程
+我们在运行一个 select 时, 函数的调用顺序如下
+
+- func Select(cases []SelectCase) (chosen int, recv Value, recvOK bool)
+- func rselect([]runtimeSelect) (chosen int, recvOK bool) func
+- selectgo(cas0 *scase, order0 *uint16, ncases int) (int, bool)
+
+前两个都是简单的初始化参数, 重点其实就在selectgo里
+
+selectgo 的处理流程如下:
+
+### 根据 cas0 获取 case 数组
+![](https://oscimg.oschina.net/oscnet/up-2f68b7405b1889a263aa0fa449e58f15e65.png)
+### 将 case 数组顺序打乱
+![](https://oscimg.oschina.net/oscnet/up-43a4121b6eac240bbbf5b7a677ff71ad629.png)
+### 将 case 数组内的每个 chan 全部上锁
+```
+// lock all the channels involved in the select
+	sellock(scases, lockorder)
+```
+### 遍历所有的 case 数组元素
+
+查看其是否可读和可写,并且直接goto到相应处理模块
+```
+	for _, casei := range pollorder {
+		casi = int(casei)
+		cas = &scases[casi]
+		c = cas.c
+
+		if casi >= nsends {
+			sg = c.sendq.dequeue()
+			if sg != nil {
+				goto recv
+			}
+			if c.qcount > 0 {
+				goto bufrecv
+			}
+			if c.closed != 0 {
+				goto rclose
+			}
+		} else {
+			if raceenabled {
+				racereadpc(c.raceaddr(), casePC(casi), chansendpc)
+			}
+			if c.closed != 0 {
+				goto sclose
+			}
+			sg = c.recvq.dequeue()
+			if sg != nil {
+				goto send
+			}
+			if c.qcount < c.dataqsiz {
+				goto bufsend
+			}
+		}
+	}
+```
+如果没有case,解锁所有
+```
+	selunlock(scases, lockorder)
+	goto retc
+```
+如果有可读或可写 case, 解锁所有的 chan, 返回对应的 chan 数据，比如 goto recv,
+
+如果没有配合for的话,select就此结束（goto ret）
